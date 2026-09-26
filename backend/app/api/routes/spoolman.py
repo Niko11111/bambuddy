@@ -39,7 +39,6 @@ from backend.app.services.spoolman import (
     get_spoolman_client,
     init_spoolman_client,
 )
-from backend.app.services.spoolman_tracking import is_slot_fallback_tag
 from backend.app.utils.filament_ids import (
     GENERIC_FILAMENT_IDS,
     filament_id_to_setting_id,
@@ -887,14 +886,14 @@ async def link_spool(
 
     try:
         await client.merge_spool_extra(spool_id, {"tag": json.dumps(spool_tag)})
-        # Spoolman 0.27+: a physical tag also becomes a native tag of the spool. A
-        # slot's fallback ID stays in extra.tag only - it names a slot, not a spool.
-        if await client.has_tag_api():
-            serials = (await db.execute(select(Printer.serial_number))).scalars().all()
-            if not is_slot_fallback_tag(spool_tag, serials):
-                holder = await client.link_native_tag(spool_id, spool_tag, "bambu" if len(spool_tag) == 32 else None)
-                if holder is not None and holder != spool_id:
-                    logger.warning("Native tag %s belongs to spool %s, left there", spool_tag, holder)
+        # Spoolman 0.27+: a tray UUID also becomes a native tag of the spool. The
+        # 16-character values this route takes are either a slot's fallback ID or
+        # the AMS's padded chip UID - neither is what a reader sees, so they stay in
+        # extra.tag only; the AMS sync adds the real chip UID when it reads the tag.
+        if len(spool_tag) == 32 and await client.has_tag_api():
+            holder = await client.link_native_tag(spool_id, spool_tag, "bambu")
+            if holder is not None and holder != spool_id:
+                logger.warning("Native tag %s belongs to spool %s, left there", spool_tag, holder)
     except SpoolmanNotFoundError:
         raise HTTPException(status_code=404, detail="Spool not found in Spoolman")
     except SpoolmanClientError:
