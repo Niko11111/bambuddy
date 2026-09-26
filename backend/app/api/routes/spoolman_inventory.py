@@ -61,7 +61,7 @@ from backend.app.services.spoolman import (
     get_spoolman_client,
     init_spoolman_client,
 )
-from backend.app.services.spoolman_tracking import get_fallback_spool_tag_for_slot
+from backend.app.services.spoolman_tracking import get_fallback_spool_tag_for_slot, is_slot_fallback_tag
 from backend.app.services.tag_conflict import tag_already_linked
 from backend.app.utils.color_utils import spoolman_color_hex
 from backend.app.utils.filament_ids import (
@@ -841,6 +841,10 @@ async def update_spool(
             cur_extra = dict(fresh.get("extra") or {})
             cur_extra["tag"] = json.dumps("")
             extra: dict | None = cur_extra
+            # Spoolman 0.27+: the native tags go as well, or the spool would still
+            # be found by every one of them after "Clear RFID Tag".
+            async with _translate_spoolman_errors():
+                await client.unlink_all_native_tags(fresh)
         else:
             extra = None
 
@@ -1209,6 +1213,18 @@ async def link_tag_to_spoolman_spool(
         if holders:
             raise tag_already_linked("tray_uuid" if data.tray_uuid else "tag_uid", holders[0]["id"])
 
+        # Spoolman 0.27+: both identifiers become native tags of the spool, added to
+        # what it already carries rather than replacing it. Spoolman refuses a UID
+        # another spool holds with a 409 naming that spool, the same answer as above.
+        if await client.has_tag_api():
+            for field, uid in (("tray_uuid", data.tray_uuid), ("tag_uid", data.tag_uid)):
+                if not uid:
+                    continue
+                async with _translate_spoolman_errors():
+                    holder = await client.link_native_tag(spool_id, uid.upper(), "bambu" if data.tray_uuid else None)
+                if holder is not None and holder != spool_id:
+                    raise tag_already_linked(field, holder)
+
         # Re-fetch inside the lock so cur_extra reflects any concurrent update.
         async with _translate_spoolman_errors():
             current = await client.get_spool(spool_id)
@@ -1220,6 +1236,64 @@ async def link_tag_to_spoolman_spool(
     logger.info("Linked tag %s to Spoolman spool %s", tag, spool_id)
     await ws_manager.broadcast({"type": "inventory_changed"})
     return _map_spoolman_spool(updated)
+
+
+_HEX_TAG_RE = re.compile(r"^[0-9A-F]{8,64}$")
+
+
+@router.post("/tags/migrate")
+async def migrate_tags_to_native(
+    dry_run: bool = Query(True, description="Only count what would move, change nothing"),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_UPDATE),
+) -> dict:
+    """Move tags from Spoolman's extra.tag into its native tags (Spoolman 0.27+).
+
+    extra.tag itself is left as it is, so older readers keep working and a
+    downgrade loses nothing. A slot's fallback ID is not a physical tag and
+    stays behind. A tag Spoolman already holds on another spool is reported as
+    a conflict for the user to settle, never moved by guessing.
+    """
+    client = await _get_client(db)
+    if not await client.has_tag_api():
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "spoolman_without_tags", "message": "Spoolman 0.27 or later is required"},
+        )
+    serials = (await db.execute(select(Printer.serial_number))).scalars().all()
+    async with _translate_spoolman_errors():
+        spools = await client.get_all_spools(allow_archived=True)
+
+    report: dict = {"dry_run": dry_run, "moved": [], "already": 0, "slot_ids": 0, "conflicts": []}
+    for spool in spools:
+        tag = _extra_tag(spool)
+        if not _HEX_TAG_RE.match(tag) or set(tag) == {"0"}:
+            continue
+        if is_slot_fallback_tag(tag, serials):
+            report["slot_ids"] += 1
+            continue
+        if tag in {t.get("uid") for t in spool.get("tags") or []}:
+            report["already"] += 1
+            continue
+        if not dry_run:
+            async with _translate_spoolman_errors():
+                holder = await client.link_native_tag(spool["id"], tag, "bambu" if len(tag) == 32 else None)
+            if holder is not None:
+                report["conflicts"].append({"spool_id": spool["id"], "tag": tag, "holder": holder})
+                continue
+        report["moved"].append(spool["id"])
+
+    logger.info(
+        "Native tag migration (dry_run=%s): %d moved, %d already, %d slot ids, %d conflicts",
+        dry_run,
+        len(report["moved"]),
+        report["already"],
+        report["slot_ids"],
+        len(report["conflicts"]),
+    )
+    if not dry_run and report["moved"]:
+        await ws_manager.broadcast({"type": "inventory_changed"})
+    return report
 
 
 @router.get("/slot-assignments/all", response_model=list[SpoolmanSlotAssignmentEnriched])
