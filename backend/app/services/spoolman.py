@@ -1359,12 +1359,17 @@ class SpoolmanClient:
             # SpoolBuddy, say - is found by that too, not only by the tray UUID.
             if existing is None and spool_tag != tray.tag_uid and tray.tag_uid and tray.tag_uid != zero_tag:
                 existing = await self.find_spool_by_tag(tray.tag_uid, cached_spools=cached_spools)
-            tag_format = "bambu" if self.is_bambu_lab_spool(tray.tray_uuid, tray.tag_uid, tray.tray_info_idx) else None
+            is_bambu = self.is_bambu_lab_spool(tray.tray_uuid, tray.tag_uid, tray.tray_info_idx)
+            tag_format = "bambu" if is_bambu else None
+            # The AMS reports a Bambu chip's 4-byte UID padded to 8 bytes
+            # ("D3E68F32" arrives as "D3E68F3200000100"). A native tag is the UID any
+            # reader sees, so only the chip's own 4 bytes go there.
+            chip_uid = tray.tag_uid[:8] if is_bambu and tray.tag_uid and len(tray.tag_uid) == 16 else tray.tag_uid
             if existing:
                 logger.info("Updating existing spool %s for tag %s...", existing["id"], spool_tag[:16])
                 # Native tags collect what the AMS reads: the tray UUID, and the chip
                 # UID of whichever side faces the reader, so both sides end up linked.
-                await self.add_native_tags(existing, [tray.tray_uuid, tray.tag_uid], tag_format)
+                await self.add_native_tags(existing, [tray.tray_uuid, chip_uid], tag_format)
                 return await self.update_spool(
                     spool_id=existing["id"],
                     remaining_weight=None if disable_weight_sync else remaining,
@@ -1413,7 +1418,7 @@ class SpoolmanClient:
                 comment="Created by Bambuddy",
                 extra={"tag": json.dumps(spool_tag)},
             )
-            await self.add_native_tags(created, [tray.tray_uuid, tray.tag_uid], tag_format)
+            await self.add_native_tags(created, [tray.tray_uuid, chip_uid], tag_format)
             return created
 
         # No-RFID fallback: use the spool ID resolved from the local slot-assignment table.
