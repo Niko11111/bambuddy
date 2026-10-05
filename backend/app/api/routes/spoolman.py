@@ -57,6 +57,8 @@ class SpoolmanStatus(BaseModel):
     enabled: bool
     connected: bool
     url: str | None
+    # Spoolman 0.27+ links tags natively; the settings offer the migration then.
+    native_tags: bool = False
 
 
 class SkippedSpool(BaseModel):
@@ -133,6 +135,7 @@ async def get_spoolman_status(
     enabled, url = sm["enabled"], sm["url"]
 
     connected = False
+    native_tags = False
     if enabled and url:
         client = await get_spoolman_client()
         if not client or client.base_url != url.rstrip("/"):
@@ -151,11 +154,14 @@ async def get_spoolman_status(
                 client = None
         if client:
             connected = await client.health_check()
+            # Asked once per client and cached, so the 30-second poll costs nothing more.
+            native_tags = connected and await client.has_tag_api()
 
     return SpoolmanStatus(
         enabled=enabled,
         connected=connected,
         url=url if url else None,
+        native_tags=native_tags,
     )
 
 

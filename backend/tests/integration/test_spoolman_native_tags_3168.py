@@ -274,3 +274,17 @@ class TestMigration:
         assert resp.status_code == 409
         assert resp.json()["detail"]["code"] == "spoolman_without_tags"
         assert fake.tag_writes() == []
+
+
+class TestStatus:
+    async def test_a_027_server_is_reported_with_native_tags(self, async_client, spoolman_on):
+        with serving(FakeSpoolman()):
+            status = (await async_client.get("/api/v1/spoolman/status")).json()
+
+        assert (status["connected"], status["native_tags"]) == (True, True)
+
+    async def test_an_older_server_is_reported_without(self, async_client, spoolman_on):
+        with serving(FakeSpoolman(tag_api=False)):
+            status = (await async_client.get("/api/v1/spoolman/status")).json()
+
+        assert (status["connected"], status["native_tags"]) == (True, False)
