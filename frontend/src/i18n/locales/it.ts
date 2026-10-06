@@ -2201,7 +2201,7 @@ export default {
     nativeTagsSlotIds: 'ID slot AMS (restano in extra.tag)',
     nativeTagsConflicts: 'Conflitti',
     nativeTagsConflictSpool: 'Bobina #{{spool}}: il tag {{tag}} appartiene già alla bobina #{{holder}}',
-    nativeTagsConflictFilament: 'Bobina #{{spool}}: il tag {{tag}} appartiene già a un filamento',
+    nativeTagsConflictElsewhere: 'Bobina #{{spool}}: il tag {{tag}} appartiene già a un filamento o a una posizione',
     nativeTagsMove: 'Copia tag',
     nativeTagsMoved: 'Tag copiati in Spoolman: {{count}}',
     nativeTagsNothing: 'Tutti i tag sono in Spoolman.',

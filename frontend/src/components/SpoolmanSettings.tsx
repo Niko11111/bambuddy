@@ -613,7 +613,7 @@ export function SpoolmanSettings() {
                               <span>
                                 {c.holder > 0
                                   ? t('settings.nativeTagsConflictSpool', { spool: c.spool_id, tag: c.tag, holder: c.holder })
-                                  : t('settings.nativeTagsConflictFilament', { spool: c.spool_id, tag: c.tag })}
+                                  : t('settings.nativeTagsConflictElsewhere', { spool: c.spool_id, tag: c.tag })}
                               </span>
                             </li>
                           ))}

@@ -446,7 +446,7 @@ describe('SpoolmanSettings', () => {
       expect(api.migrateSpoolmanTags).toHaveBeenCalledTimes(1);
       expect(api.migrateSpoolmanTags).toHaveBeenCalledWith(true);
       expect(screen.getByText('Spool #4: tag A1B2C3D4 already belongs to spool #5')).toBeInTheDocument();
-      expect(screen.getByText('Spool #9: tag 11223344 already belongs to a filament')).toBeInTheDocument();
+      expect(screen.getByText('Spool #9: tag 11223344 already belongs to a filament or location')).toBeInTheDocument();
       expect(screen.getByRole('button', { name: /Copy tags/i })).toBeInTheDocument();
     });
 

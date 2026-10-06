@@ -2245,7 +2245,7 @@ export default {
     nativeTagsSlotIds: 'AMS スロット ID（extra.tag に残ります）',
     nativeTagsConflicts: '競合',
     nativeTagsConflictSpool: 'スプール #{{spool}}: タグ {{tag}} は既にスプール #{{holder}} に紐付いています',
-    nativeTagsConflictFilament: 'スプール #{{spool}}: タグ {{tag}} は既にフィラメントに紐付いています',
+    nativeTagsConflictElsewhere: 'スプール #{{spool}}: タグ {{tag}} は既にフィラメントまたは保管場所に紐付いています',
     nativeTagsMove: 'タグをコピー',
     nativeTagsMoved: 'Spoolman にコピーしたタグ: {{count}}',
     nativeTagsNothing: 'すべてのタグが Spoolman にあります。',

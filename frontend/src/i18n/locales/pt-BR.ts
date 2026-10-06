@@ -2201,7 +2201,7 @@ export default {
     nativeTagsSlotIds: 'IDs de slot do AMS (ficam em extra.tag)',
     nativeTagsConflicts: 'Conflitos',
     nativeTagsConflictSpool: 'Carretel #{{spool}}: a tag {{tag}} já pertence ao carretel #{{holder}}',
-    nativeTagsConflictFilament: 'Carretel #{{spool}}: a tag {{tag}} já pertence a um filamento',
+    nativeTagsConflictElsewhere: 'Carretel #{{spool}}: a tag {{tag}} já pertence a um filamento ou local',
     nativeTagsMove: 'Copiar tags',
     nativeTagsMoved: 'Tags copiadas para o Spoolman: {{count}}',
     nativeTagsNothing: 'Todas as tags estão no Spoolman.',

@@ -891,15 +891,29 @@ async def link_spool(
         printer_context = (request.printer_id, request.ams_id, request.tray_id)
 
     try:
-        await client.merge_spool_extra(spool_id, {"tag": json.dumps(spool_tag)})
         # Spoolman 0.27+: a tray UUID also becomes a native tag of the spool. The
         # 16-character values this route takes are either a slot's fallback ID or
         # the AMS's padded chip UID - neither is what a reader sees, so they stay in
         # extra.tag only; the AMS sync adds the real chip UID when it reads the tag.
+        # The native link goes first, as the step Spoolman can refuse, so a refusal
+        # leaves extra.tag untouched; a failed extra.tag write takes back what was added.
+        added_native = False
         if len(spool_tag) == 32 and await client.has_tag_api():
-            holder = await client.link_native_tag(spool_id, spool_tag, "bambu")
-            if holder is not None and holder != spool_id:
+            before = await client.get_spool(spool_id)
+            had = any(t.get("uid") == spool_tag for t in before.get("tags") or [])
+            holder = await client.claim_native_tag(spool_id, spool_tag, "bambu")
+            if holder is not None:
                 logger.warning("Native tag %s belongs to spool %s, left there", spool_tag, holder)
+            added_native = holder is None and not had
+        try:
+            await client.merge_spool_extra(spool_id, {"tag": json.dumps(spool_tag)})
+        except Exception:
+            if added_native:
+                try:
+                    await client.unlink_native_tag(spool_id, spool_tag)
+                except (SpoolmanClientError, SpoolmanUnavailableError) as exc:
+                    logger.warning("Could not take back native tag %s from spool %s: %s", spool_tag, spool_id, exc)
+            raise
     except SpoolmanNotFoundError:
         raise HTTPException(status_code=404, detail="Spool not found in Spoolman")
     except SpoolmanClientError:

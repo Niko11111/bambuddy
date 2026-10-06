@@ -2268,7 +2268,7 @@ export default {
     nativeTagsSlotIds: 'AMS slot IDs (stay in extra.tag)',
     nativeTagsConflicts: 'Conflicts',
     nativeTagsConflictSpool: 'Spool #{{spool}}: tag {{tag}} already belongs to spool #{{holder}}',
-    nativeTagsConflictFilament: 'Spool #{{spool}}: tag {{tag}} already belongs to a filament',
+    nativeTagsConflictElsewhere: 'Spool #{{spool}}: tag {{tag}} already belongs to a filament or location',
     nativeTagsMove: 'Copy tags',
     nativeTagsMoved: 'Tags copied to Spoolman: {{count}}',
     nativeTagsNothing: 'Every tag is in Spoolman.',

@@ -2246,7 +2246,7 @@ export default {
     nativeTagsSlotIds: 'AMS 槽位 ID（保留在 extra.tag 中）',
     nativeTagsConflicts: '衝突',
     nativeTagsConflictSpool: '料盤 #{{spool}}：標籤 {{tag}} 已屬於料盤 #{{holder}}',
-    nativeTagsConflictFilament: '料盤 #{{spool}}：標籤 {{tag}} 已屬於某個耗材',
+    nativeTagsConflictElsewhere: '料盤 #{{spool}}：標籤 {{tag}} 已屬於某個耗材或存放位置',
     nativeTagsMove: '複製標籤',
     nativeTagsMoved: '已複製到 Spoolman 的標籤：{{count}}',
     nativeTagsNothing: '所有標籤都已在 Spoolman 中。',

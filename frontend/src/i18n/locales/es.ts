@@ -2249,7 +2249,7 @@ export default {
     nativeTagsSlotIds: 'ID de ranura AMS (se quedan en extra.tag)',
     nativeTagsConflicts: 'Conflictos',
     nativeTagsConflictSpool: 'Bobina #{{spool}}: la etiqueta {{tag}} ya pertenece a la bobina #{{holder}}',
-    nativeTagsConflictFilament: 'Bobina #{{spool}}: la etiqueta {{tag}} ya pertenece a un filamento',
+    nativeTagsConflictElsewhere: 'Bobina #{{spool}}: la etiqueta {{tag}} ya pertenece a un filamento o una ubicación',
     nativeTagsMove: 'Copiar etiquetas',
     nativeTagsMoved: 'Etiquetas copiadas a Spoolman: {{count}}',
     nativeTagsNothing: 'Todas las etiquetas están en Spoolman.',

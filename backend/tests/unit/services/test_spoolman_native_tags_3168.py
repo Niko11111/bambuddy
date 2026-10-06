@@ -10,7 +10,12 @@ from unittest.mock import patch
 import httpx
 import pytest
 
-from backend.app.services.spoolman import TAG_API_RECHECK_SECONDS, AMSTray, SpoolmanClient
+from backend.app.services.spoolman import (
+    TAG_API_RECHECK_SECONDS,
+    TAG_REFUSAL_RETRY_SECONDS,
+    AMSTray,
+    SpoolmanClient,
+)
 from backend.tests._fixtures.spoolman_tags import BASE_URL, FakeSpoolman, client_for
 
 TRAY_UUID = "9E0B0717BEE94D7887EB1D8DFD1A14F3"
@@ -164,6 +169,26 @@ class TestLinkNativeTag:
         assert await client.link_native_tag(7, CHIP) == -1
 
 
+class TestClaimNativeTag:
+    async def test_a_tag_an_archived_spool_holds_is_taken_from_it(self):
+        fake = FakeSpoolman()
+        fake.add_spool(1, tags=[CHIP], archived=True)
+        fake.add_spool(7)
+        client = client_for(fake)
+
+        assert await client.claim_native_tag(7, CHIP) is None
+        assert (fake.native(1), fake.native(7)) == ([], [CHIP])
+
+    async def test_a_tag_an_active_spool_holds_stays_there(self):
+        fake = FakeSpoolman()
+        fake.add_spool(1, tags=[CHIP])
+        fake.add_spool(7)
+        client = client_for(fake)
+
+        assert await client.claim_native_tag(7, CHIP) == 1
+        assert (fake.native(1), fake.native(7)) == ([CHIP], [])
+
+
 class TestAddNativeTags:
     async def test_adds_what_is_missing_and_skips_what_cannot_go(self):
         fake = FakeSpoolman()
@@ -187,6 +212,42 @@ class TestAddNativeTags:
 
         assert await client.add_native_tags(spool, [TRAY_UUID, CHIP]) == 0
         assert fake.tag_writes() == []
+
+    async def test_a_refused_tag_is_not_asked_for_on_every_update(self, caplog):
+        """The AMS sync calls this on every AMS update; a refusal must not repeat each time."""
+        fake = FakeSpoolman()
+        fake.add_spool(1, tags=[CHIP])
+        spool = fake.add_spool(7)
+        client = client_for(fake)
+        now = [1000.0]
+
+        with patch("backend.app.services.spoolman.time.monotonic", lambda: now[0]):
+            for _ in range(5):
+                await client.add_native_tags(spool, [CHIP])
+                now[0] += 60
+            assert fake.asked("POST /spool/7/tag") == 1
+
+            # The conflict is settled in Spoolman; the next try after the wait picks it up.
+            fake.spools[1]["tags"] = []
+            now[0] += TAG_REFUSAL_RETRY_SECONDS
+            assert await client.add_native_tags(spool, [CHIP]) == 1
+
+        assert fake.native(7) == [CHIP]
+        warnings = [r for r in caplog.records if r.levelname == "WARNING" and CHIP in r.getMessage()]
+        assert len(warnings) == 1
+
+    async def test_a_scan_asks_again_at_once_and_still_holds_off_the_ams_sync(self):
+        fake = FakeSpoolman()
+        fake.add_spool(1, tags=[CHIP])
+        spool = fake.add_spool(7)
+        client = client_for(fake)
+
+        await client.add_native_tags(spool, [CHIP], retry_refused=True)
+        await client.add_native_tags(spool, [CHIP], retry_refused=True)
+        assert fake.asked("POST /spool/7/tag") == 2
+
+        await client.add_native_tags(spool, [CHIP])  # the AMS sync, right after
+        assert fake.asked("POST /spool/7/tag") == 2
 
 
 class TestUnlinkAllNativeTags:

@@ -2246,7 +2246,7 @@ export default {
     nativeTagsSlotIds: 'AMS-Slot-IDs (bleiben in extra.tag)',
     nativeTagsConflicts: 'Konflikte',
     nativeTagsConflictSpool: 'Spule #{{spool}}: Tag {{tag}} gehört bereits zu Spule #{{holder}}',
-    nativeTagsConflictFilament: 'Spule #{{spool}}: Tag {{tag}} gehört bereits zu einem Filament',
+    nativeTagsConflictElsewhere: 'Spule #{{spool}}: Tag {{tag}} gehört bereits zu einem Filament oder Lagerort',
     nativeTagsMove: 'Tags kopieren',
     nativeTagsMoved: 'Nach Spoolman kopierte Tags: {{count}}',
     nativeTagsNothing: 'Alle Tags sind in Spoolman.',

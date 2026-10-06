@@ -2150,7 +2150,7 @@ export default {
     nativeTagsSlotIds: 'AMS 슬롯 ID (extra.tag에 유지)',
     nativeTagsConflicts: '충돌',
     nativeTagsConflictSpool: '스풀 #{{spool}}: 태그 {{tag}}는 이미 스풀 #{{holder}}에 연결되어 있습니다',
-    nativeTagsConflictFilament: '스풀 #{{spool}}: 태그 {{tag}}는 이미 필라멘트에 연결되어 있습니다',
+    nativeTagsConflictElsewhere: '스풀 #{{spool}}: 태그 {{tag}}는 이미 필라멘트 또는 위치에 연결되어 있습니다',
     nativeTagsMove: '태그 복사',
     nativeTagsMoved: 'Spoolman에 복사된 태그: {{count}}',
     nativeTagsNothing: '모든 태그가 Spoolman에 있습니다.',

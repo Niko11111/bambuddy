@@ -2266,7 +2266,7 @@ export default {
     nativeTagsSlotIds: "AMS-slot-ID's (blijven in extra.tag)",
     nativeTagsConflicts: 'Conflicten',
     nativeTagsConflictSpool: 'Spoel #{{spool}}: tag {{tag}} hoort al bij spoel #{{holder}}',
-    nativeTagsConflictFilament: 'Spoel #{{spool}}: tag {{tag}} hoort al bij een filament',
+    nativeTagsConflictElsewhere: 'Spoel #{{spool}}: tag {{tag}} hoort al bij een filament of locatie',
     nativeTagsMove: 'Tags kopiëren',
     nativeTagsMoved: 'Naar Spoolman gekopieerde tags: {{count}}',
     nativeTagsNothing: 'Alle tags staan in Spoolman.',

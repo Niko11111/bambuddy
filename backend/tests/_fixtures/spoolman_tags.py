@@ -5,14 +5,19 @@ The rules modelled here are the server's own (``spoolman/api/v1/spool.py`` and
 
 - ``GET /api/v1/tag/reader`` answers 200 on 0.27; an older server has no such route.
 - a UID is stored without separators and upper-cased, and must be hex, else 400
-- a UID identifies exactly one spool or filament: linking one that something else
-  holds answers 409 with ``spool_id`` or ``filament_id`` naming the holder
+- a UID identifies exactly one spool, filament or location, archived spools
+  included: linking one that something else holds answers 409 with ``spool_id`` or
+  ``filament_id`` naming the holder, and with neither for a location
 - re-linking a UID to the spool that already holds it succeeds and changes nothing
-- ``GET /api/v1/spool?tag=<uid>`` answers the spool holding it, server side
+- ``GET /api/v1/spool?tag=<uid>`` answers the spool holding it, server side, and
+  like every spool listing leaves archived spools out unless ``allow_archived=true``
 - each spool carries its native tags under ``tags``
 
 An older server ignores the ``tag`` query parameter, as FastAPI does with any
 parameter a route does not declare, and answers the whole list.
+
+Failures a test needs can be switched on: ``refuse_400`` (UIDs the tag route
+rejects as invalid) and ``fail_patch`` (spool ids whose PATCH answers 500).
 
 Every request is logged as ``"METHOD /path"`` (``?tag=`` included), so a test can
 assert what was *not* asked: a scan that must not load the whole inventory, say.
@@ -38,8 +43,11 @@ class FakeSpoolman:
     def __init__(self, *, tag_api: bool = True):
         self.tag_api = tag_api
         self.spools: dict[int, dict] = {}
-        # UIDs held by a filament rather than a spool: the other kind of 409.
+        # UIDs held by a filament or a location rather than a spool: the other 409s.
         self.filament_tags: dict[str, int] = {}
+        self.location_tags: set[str] = set()
+        self.refuse_400: set[str] = set()
+        self.fail_patch: set[int] = set()
         self.log: list[str] = []
 
     def add_spool(self, spool_id: int, *, extra_tag: str | None = None, tags=(), archived: bool = False) -> dict:
@@ -101,9 +109,11 @@ class FakeSpoolman:
                 uid = _normalise(tag_param)
                 if not _HEX.match(uid):
                     return httpx.Response(400, json={"message": f"Invalid tag UID {tag_param!r}."})
-                holder = self.holder(uid)
-                return httpx.Response(200, json=[self.spools[holder]] if holder is not None else [])
             allow_archived = request.url.params.get("allow_archived") == "true"
+            if tag_param is not None and self.tag_api:
+                holder = self.holder(uid)
+                found = [self.spools[holder]] if holder is not None else []
+                return httpx.Response(200, json=[x for x in found if allow_archived or not x.get("archived")])
             return httpx.Response(
                 200, json=[s for s in self.spools.values() if allow_archived or not s.get("archived")]
             )
@@ -113,8 +123,10 @@ class FakeSpoolman:
             if spool_id not in self.spools:
                 return httpx.Response(404, json={"message": f"No spool with ID {spool_id} found."})
             uid = _normalise(body.get("uid", ""))
-            if not uid or not _HEX.match(uid):
+            if not uid or not _HEX.match(uid) or uid in self.refuse_400:
                 return httpx.Response(400, json={"message": f"Invalid tag UID {body.get('uid')!r}."})
+            if uid in self.location_tags:
+                return httpx.Response(409, json={"message": f"Tag {uid} is already linked to location Shelf."})
             if uid in self.filament_tags:
                 return httpx.Response(
                     409, json={"message": "Tag is linked to a filament.", "filament_id": self.filament_tags[uid]}
@@ -143,6 +155,8 @@ class FakeSpoolman:
             if spool_id not in self.spools:
                 return httpx.Response(404, json={"message": f"No spool with ID {spool_id} found."})
             spool = self.spools[spool_id]
+            if request.method == "PATCH" and spool_id in self.fail_patch:
+                return httpx.Response(500, json={"message": "Internal Server Error"})
             if request.method == "PATCH":
                 # Spoolman merges extra key by key, like the real one.
                 extra = body.pop("extra", None)

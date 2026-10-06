@@ -2147,7 +2147,7 @@ export default {
     nativeTagsSlotIds: 'ID слотов AMS (остаются в extra.tag)',
     nativeTagsConflicts: 'Конфликты',
     nativeTagsConflictSpool: 'Катушка #{{spool}}: метка {{tag}} уже принадлежит катушке #{{holder}}',
-    nativeTagsConflictFilament: 'Катушка #{{spool}}: метка {{tag}} уже принадлежит филаменту',
+    nativeTagsConflictElsewhere: 'Катушка #{{spool}}: метка {{tag}} уже принадлежит филаменту или месту хранения',
     nativeTagsMove: 'Скопировать метки',
     nativeTagsMoved: 'Меток скопировано в Spoolman: {{count}}',
     nativeTagsNothing: 'Все метки уже в Spoolman.',

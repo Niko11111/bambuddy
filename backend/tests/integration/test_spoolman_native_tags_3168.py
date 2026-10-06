@@ -7,6 +7,7 @@ client lookup and the websocket broadcast are patched.
 
 import json
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -15,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.printer import Printer
 from backend.app.models.settings import Settings
+from backend.app.models.spoolbuddy_device import SpoolBuddyDevice
 from backend.app.services.spoolman_tracking import get_fallback_spool_tag_for_slot
 from backend.tests._fixtures.spoolman_tags import BASE_URL, FakeSpoolman, client_for
 
@@ -108,6 +110,39 @@ class TestSpoolBuddyScan:
         assert fake.holder(TRAY_UUID) == 9
         assert fake.holder(CHIP) == 7
 
+    async def test_a_tag_left_on_an_archived_spool_moves_to_its_successor(self, async_client, spoolman_on):
+        """The archived spool holds the chip natively; its active successor has it in extra.tag."""
+        fake = FakeSpoolman()
+        fake.add_spool(1, extra_tag=CHIP, tags=[CHIP], archived=True)
+        fake.add_spool(9, extra_tag=CHIP)
+
+        with serving(fake):
+            first = await _scan(async_client, CHIP)
+            second = await _scan(async_client, CHIP)
+
+        assert first["spool_id"] == second["spool_id"] == 9
+        assert fake.holder(CHIP) == 9
+        assert fake.asked("POST /spool/9/tag") == 2  # refused once, then linked after the move
+
+    async def test_a_scan_right_after_settling_a_conflict_adds_the_tag(self, async_client, spoolman_on):
+        """A refusal holds off the AMS sync, not someone scanning at the reader.
+
+        Spool 7 is found by its tray UUID; its chip is linked to spool 1 by mistake.
+        The conflict is settled in Spoolman and the spool scanned again at once.
+        """
+        fake = FakeSpoolman()
+        fake.add_spool(1, tags=[CHIP])
+        fake.add_spool(7, extra_tag=TRAY_UUID, tags=[TRAY_UUID])
+
+        with serving(fake):
+            first = await _scan(async_client, CHIP, TRAY_UUID)
+            assert (first["spool_id"], fake.holder(CHIP)) == (7, 1)
+            fake.spools[1]["tags"] = []
+            second = await _scan(async_client, CHIP, TRAY_UUID)
+
+        assert second["spool_id"] == 7
+        assert fake.holder(CHIP) == 7
+
     async def test_an_older_server_matches_through_extra_tag_and_writes_no_tags(self, async_client, spoolman_on):
         fake = FakeSpoolman(tag_api=False)
         fake.add_spool(7, extra_tag=TRAY_UUID)
@@ -151,19 +186,177 @@ class TestLinkTag:
         assert fake.native(7) == [OTHER_CHIP]
         assert fake.spools[7]["extra"] == {}
 
-    async def test_a_tag_a_filament_holds_is_refused_without_naming_a_spool(self, async_client, spoolman_on):
+    @pytest.mark.parametrize("holder", ["filament", "location"])
+    async def test_a_tag_a_filament_or_location_holds_is_refused_without_naming_a_spool(
+        self, async_client, spoolman_on, holder
+    ):
         fake = FakeSpoolman()
         fake.add_spool(7)
-        fake.filament_tags[CHIP] = 4
+        if holder == "filament":
+            fake.filament_tags[CHIP] = 4
+        else:
+            fake.location_tags.add(CHIP)
 
         with serving(fake):
             resp = await async_client.patch(f"{INVENTORY}/spools/7/tag", json={"tray_uuid": TRAY_UUID, "tag_uid": CHIP})
 
         assert resp.status_code == 409
         detail = resp.json()["detail"]
-        assert (detail["code"], detail["field"]) == ("tag_linked_to_filament", "tag_uid")
+        assert (detail["code"], detail["field"]) == ("tag_linked_elsewhere", "tag_uid")
         assert "spool_id" not in detail
         assert fake.native(7) == []
+
+    async def test_a_tag_an_archived_spool_holds_moves_to_the_spool(self, async_client, spoolman_on):
+        """The archived spool is the one this spool replaced; Bambuddy cannot even show it."""
+        fake = FakeSpoolman()
+        fake.add_spool(1, tags=[CHIP], archived=True)
+        fake.add_spool(7)
+
+        with serving(fake):
+            resp = await async_client.patch(f"{INVENTORY}/spools/7/tag", json={"tag_uid": CHIP})
+
+        assert resp.status_code == 200
+        assert fake.native(7) == [CHIP]
+        assert fake.native(1) == []
+
+    async def test_a_failed_extra_tag_write_takes_back_what_the_request_added(self, async_client, spoolman_on):
+        fake = FakeSpoolman()
+        fake.add_spool(7, tags=[OTHER_CHIP])
+        fake.fail_patch.add(7)
+
+        with serving(fake):
+            resp = await async_client.patch(f"{INVENTORY}/spools/7/tag", json={"tray_uuid": TRAY_UUID, "tag_uid": CHIP})
+
+        assert resp.status_code >= 500
+        assert fake.native(7) == [OTHER_CHIP]
+
+
+class TestLinkSpoolRoute:
+    """POST /spoolman/spools/{id}/link, the AMS slot's "Link to Spoolman"."""
+
+    async def test_a_refused_native_tag_leaves_extra_tag_untouched(self, async_client, spoolman_on):
+        fake = FakeSpoolman()
+        fake.add_spool(7)
+        fake.refuse_400.add(TRAY_UUID)
+
+        with serving(fake):
+            resp = await async_client.post("/api/v1/spoolman/spools/7/link", json={"spool_tag": TRAY_UUID})
+
+        assert resp.status_code == 502
+        assert fake.spools[7]["extra"] == {}
+        assert fake.native(7) == []
+
+    async def test_a_failed_extra_tag_write_takes_the_native_tag_back(self, async_client, spoolman_on):
+        fake = FakeSpoolman()
+        fake.add_spool(7, tags=[OTHER_CHIP])
+        fake.fail_patch.add(7)
+
+        with serving(fake):
+            resp = await async_client.post("/api/v1/spoolman/spools/7/link", json={"spool_tag": TRAY_UUID})
+
+        assert resp.status_code >= 500
+        assert fake.native(7) == [OTHER_CHIP]
+
+    async def test_a_tag_the_spool_already_had_stays_when_the_write_fails(self, async_client, spoolman_on):
+        fake = FakeSpoolman()
+        fake.add_spool(7, tags=[TRAY_UUID])
+        fake.fail_patch.add(7)
+
+        with serving(fake):
+            resp = await async_client.post("/api/v1/spoolman/spools/7/link", json={"spool_tag": TRAY_UUID})
+
+        assert resp.status_code >= 500
+        assert fake.native(7) == [TRAY_UUID]
+
+
+class TestNfcWriteResult:
+    """SpoolBuddy reports a tag it has just written for a Spoolman spool."""
+
+    @pytest.fixture
+    async def device(self, db_session: AsyncSession):
+        db_session.add(
+            SpoolBuddyDevice(
+                device_id="sb-write",
+                hostname="spoolbuddy",
+                ip_address="10.0.0.9",
+                firmware_version="1.0.0",
+                has_nfc=True,
+                has_scale=True,
+                tare_offset=0,
+                calibration_factor=1.0,
+                last_seen=datetime.now(timezone.utc),
+                pending_command="write_tag",
+                pending_write_payload=json.dumps(
+                    {"spool_id": 7, "ndef_data_hex": "deadbeef", "data_origin": "spoolman"}
+                ),
+            )
+        )
+        await db_session.commit()
+
+    async def _report(self, async_client):
+        return await async_client.post(
+            "/api/v1/spoolbuddy/nfc/write-result",
+            json={"device_id": "sb-write", "spool_id": 7, "tag_uid": CHIP, "success": True},
+        )
+
+    async def test_the_written_tag_moves_from_its_previous_spool(self, async_client, spoolman_on, device):
+        fake = FakeSpoolman()
+        fake.add_spool(1, tags=[CHIP])
+        fake.add_spool(7)
+
+        with serving(fake):
+            resp = await self._report(async_client)
+
+        assert resp.status_code == 200
+        assert (fake.native(1), fake.native(7)) == ([], [CHIP])
+        assert fake.spools[7]["extra"]["tag"] == json.dumps(CHIP)
+
+    async def test_a_refused_native_tag_leaves_extra_tag_untouched(self, async_client, spoolman_on, device):
+        fake = FakeSpoolman()
+        fake.add_spool(7)
+        fake.refuse_400.add(CHIP)
+
+        with serving(fake):
+            resp = await self._report(async_client)
+
+        assert resp.status_code == 502
+        assert fake.spools[7]["extra"] == {}
+
+    async def test_a_failed_extra_tag_write_takes_the_native_tag_back(self, async_client, spoolman_on, device):
+        fake = FakeSpoolman()
+        fake.add_spool(7)
+        fake.fail_patch.add(7)
+
+        with serving(fake):
+            resp = await self._report(async_client)
+
+        assert resp.status_code == 502
+        assert fake.native(7) == []
+
+
+class TestClearRfidTag:
+    async def test_clearing_removes_extra_tag_and_the_native_tags(self, async_client, spoolman_on):
+        fake = FakeSpoolman()
+        fake.add_spool(7, extra_tag=TRAY_UUID, tags=[TRAY_UUID, CHIP])
+
+        with serving(fake):
+            resp = await async_client.patch(f"{INVENTORY}/spools/7", json={"tag_uid": None})
+
+        assert resp.status_code == 200
+        assert fake.spools[7]["extra"]["tag"] == json.dumps("")
+        assert fake.native(7) == []
+        assert resp.json()["tray_uuid"] is None
+
+    async def test_a_failed_update_keeps_the_native_tags(self, async_client, spoolman_on):
+        fake = FakeSpoolman()
+        fake.add_spool(7, extra_tag=TRAY_UUID, tags=[TRAY_UUID, CHIP])
+        fake.fail_patch.add(7)
+
+        with serving(fake):
+            resp = await async_client.patch(f"{INVENTORY}/spools/7", json={"tag_uid": None})
+
+        assert resp.status_code >= 500
+        assert fake.native(7) == sorted([TRAY_UUID, CHIP])
 
 
 class TestUnlink:
@@ -213,7 +406,7 @@ class TestMigration:
         fake.add_spool(3, extra_tag=get_fallback_spool_tag_for_slot(printer.serial_number, 0, 1))  # a slot, not a tag
         fake.add_spool(4, extra_tag=OTHER_CHIP)  # spool 5 holds it natively
         fake.add_spool(5, tags=[OTHER_CHIP])
-        fake.add_spool(6, extra_tag="11223344", archived=True)  # archived spools move too
+        fake.add_spool(6, extra_tag="11223344", archived=True)  # archived: left out
         fake.add_spool(8)  # no tag at all
         return fake
 
@@ -228,7 +421,7 @@ class TestMigration:
         assert resp.status_code == 200
         report = resp.json()
         assert report["dry_run"] is True
-        assert report["moved"] == [1, 6]
+        assert report["moved"] == [1]
         assert (report["already"], report["slot_ids"]) == (1, 1)
         assert report["conflicts"] == [{"spool_id": 4, "tag": OTHER_CHIP, "holder": 5}]
         assert fake.tag_writes() == []
@@ -240,10 +433,10 @@ class TestMigration:
             dry = (await async_client.post(f"{INVENTORY}/tags/migrate")).json()
             real = (await async_client.post(f"{INVENTORY}/tags/migrate", params={"dry_run": "false"})).json()
 
-        assert real["moved"] == dry["moved"] == [1, 6]
+        assert real["moved"] == dry["moved"] == [1]
         assert real["conflicts"] == dry["conflicts"]
         assert fake.native(1) == [TRAY_UUID]
-        assert fake.native(6) == ["11223344"]
+        assert fake.native(6) == []
         assert fake.native(3) == []
         assert fake.native(4) == []
         # extra.tag is left as it was, for older readers and a downgrade.
@@ -263,6 +456,33 @@ class TestMigration:
         expected = [{"spool_id": 2, "tag": CHIP, "holder": 1}]
         assert dry["conflicts"] == real["conflicts"] == expected
         assert fake.holder(CHIP) == 1
+
+    async def test_an_archived_spool_and_its_successor_sharing_a_tag(self, async_client, spoolman_on):
+        """The case from the review: the tag goes to the active spool, not the archived one."""
+        fake = FakeSpoolman()
+        fake.add_spool(1, extra_tag=CHIP, archived=True)
+        fake.add_spool(9, extra_tag=CHIP)
+
+        with serving(fake):
+            dry = (await async_client.post(f"{INVENTORY}/tags/migrate")).json()
+            real = (await async_client.post(f"{INVENTORY}/tags/migrate", params={"dry_run": "false"})).json()
+
+        assert dry["moved"] == real["moved"] == [9]
+        assert dry["conflicts"] == real["conflicts"] == []
+        assert fake.holder(CHIP) == 9
+
+    async def test_a_tag_already_on_an_archived_spool_is_moved_not_reported(self, async_client, spoolman_on):
+        fake = FakeSpoolman()
+        fake.add_spool(1, extra_tag=CHIP, tags=[CHIP], archived=True)
+        fake.add_spool(9, extra_tag=CHIP)
+
+        with serving(fake):
+            dry = (await async_client.post(f"{INVENTORY}/tags/migrate")).json()
+            real = (await async_client.post(f"{INVENTORY}/tags/migrate", params={"dry_run": "false"})).json()
+
+        assert dry["moved"] == real["moved"] == [9]
+        assert dry["conflicts"] == real["conflicts"] == []
+        assert (fake.native(1), fake.native(9)) == ([], [CHIP])
 
     async def test_an_older_server_is_refused(self, async_client, spoolman_on):
         fake = FakeSpoolman(tag_api=False)

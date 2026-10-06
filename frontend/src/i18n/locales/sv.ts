@@ -2265,7 +2265,7 @@ export default {
     nativeTagsSlotIds: 'AMS-plats-ID:n (stannar i extra.tag)',
     nativeTagsConflicts: 'Konflikter',
     nativeTagsConflictSpool: 'Spole #{{spool}}: taggen {{tag}} tillhör redan spole #{{holder}}',
-    nativeTagsConflictFilament: 'Spole #{{spool}}: taggen {{tag}} tillhör redan ett filament',
+    nativeTagsConflictElsewhere: 'Spole #{{spool}}: taggen {{tag}} tillhör redan ett filament eller en plats',
     nativeTagsMove: 'Kopiera taggar',
     nativeTagsMoved: 'Taggar kopierade till Spoolman: {{count}}',
     nativeTagsNothing: 'Alla taggar finns i Spoolman.',

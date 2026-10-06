@@ -2249,7 +2249,7 @@ export default {
     nativeTagsSlotIds: 'AMS yuva kimlikleri (extra.tag içinde kalır)',
     nativeTagsConflicts: 'Çakışmalar',
     nativeTagsConflictSpool: 'Makara #{{spool}}: {{tag}} etiketi zaten #{{holder}} makarasına ait',
-    nativeTagsConflictFilament: 'Makara #{{spool}}: {{tag}} etiketi zaten bir filamente ait',
+    nativeTagsConflictElsewhere: 'Makara #{{spool}}: {{tag}} etiketi zaten bir filamente veya konuma ait',
     nativeTagsMove: 'Etiketleri kopyala',
     nativeTagsMoved: "Spoolman'a kopyalanan etiketler: {{count}}",
     nativeTagsNothing: "Tüm etiketler Spoolman'da.",

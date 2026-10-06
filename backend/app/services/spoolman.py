@@ -24,6 +24,11 @@ BAMBU_RFID_TAG_LENGTH = 32
 # so upgrading Spoolman to 0.27 needs no Bambuddy restart.
 TAG_API_RECHECK_SECONDS = 600
 
+# How long a native tag Spoolman refused for a spool is left alone. The AMS sync
+# would otherwise ask again on every AMS update; this way a conflict settled in
+# Spoolman is still picked up without a restart.
+TAG_REFUSAL_RETRY_SECONDS = 600
+
 # Spool.extra key holding the consumed-counter baseline. Defined here rather
 # than imported from the routes package so the client does not depend on it;
 # _spoolman_helpers declares the same name for the read side (#2906), and
@@ -139,6 +144,8 @@ class SpoolmanClient:
         # Per instance like the field cache above: a client for another URL asks again.
         self._tag_api: bool | None = None
         self._tag_api_asked_at = 0.0
+        # (spool id, UID) -> when Spoolman last refused that native tag for that spool.
+        self._refused_tags: dict[tuple[int, str], float] = {}
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create the HTTP client with connection pooling limits."""
@@ -982,7 +989,7 @@ class SpoolmanClient:
     async def link_native_tag(self, spool_id: int, uid: str, tag_format: str | None = None) -> int | None:
         """Link a native tag to a spool; None on success, the holder's spool id on a conflict.
 
-        A conflict whose holder is not a spool (a filament, say) answers -1.
+        A conflict whose holder is not a spool (a filament or a location) answers -1.
         """
         body: dict = {"uid": uid}
         if tag_format:
@@ -994,6 +1001,27 @@ class SpoolmanClient:
         if response.status_code == 400:
             raise SpoolmanClientError(f"Spoolman refused tag {uid!r}", 400, response.text[:500])
         return None
+
+    async def claim_native_tag(self, spool_id: int, uid: str, tag_format: str | None = None) -> int | None:
+        """Link a native tag to a spool, taking it from an archived spool that still holds it.
+
+        Spoolman keeps a tag unique across archived spools too, while Bambuddy never
+        looks at those: a spool is archived once it is used up or replaced, so the tag
+        it still holds belongs to the active spool now. A tag held by an active spool,
+        a filament or a location is refused as with link_native_tag.
+        """
+        holder = await self.link_native_tag(spool_id, uid, tag_format)
+        if holder is None or holder < 0:
+            return holder
+        try:
+            held_by = await self.get_spool(holder)
+        except SpoolmanNotFoundError:
+            return holder
+        if not held_by.get("archived"):
+            return holder
+        await self.unlink_native_tag(holder, uid)
+        logger.info("Native tag %s moved from archived spool %s to spool %s", uid, holder, spool_id)
+        return await self.link_native_tag(spool_id, uid, tag_format)
 
     async def unlink_native_tag(self, spool_id: int, uid: str) -> None:
         """Remove a native tag from a spool; a tag the spool does not hold is not an error."""
@@ -1011,29 +1039,48 @@ class SpoolmanClient:
             if uid:
                 await self.unlink_native_tag(int(spool["id"]), uid)
 
-    async def add_native_tags(self, spool: dict, uids: list[str | None], tag_format: str | None = None) -> int:
+    async def add_native_tags(
+        self,
+        spool: dict,
+        uids: list[str | None],
+        tag_format: str | None = None,
+        *,
+        retry_refused: bool = False,
+    ) -> int:
         """Link the given UIDs to the spool as native tags, skipping those it already has.
 
         Best-effort: a UID another spool holds, or a failed request, is logged and
-        skipped, so a caller never loses its main result over this. Returns how many
-        tags were added.
+        skipped, so a caller never loses its main result over this. A refused UID is
+        not asked for again for TAG_REFUSAL_RETRY_SECONDS, and warned about once:
+        the AMS sync calls this on every AMS update. A scan passes retry_refused,
+        since someone is standing at the spool and may just have settled the
+        conflict in Spoolman. Returns how many tags were added.
         """
         if not await self.has_tag_api():
             return 0
+        spool_id = int(spool["id"])
         have = {t.get("uid") for t in spool.get("tags") or []}
         wanted = {u.strip('"').upper() for u in uids if u and u.strip('"').strip("0")}
+        now = time.monotonic()
         added = 0
         for uid in sorted(wanted - have):
+            refused_at = self._refused_tags.get((spool_id, uid))
+            if not retry_refused and refused_at is not None and now - refused_at < TAG_REFUSAL_RETRY_SECONDS:
+                continue
             try:
-                holder = await self.link_native_tag(int(spool["id"]), uid, tag_format)
+                holder = await self.claim_native_tag(spool_id, uid, tag_format)
             except (SpoolmanNotFoundError, SpoolmanClientError, SpoolmanUnavailableError) as e:
-                logger.warning("Could not add native tag %s to spool %s: %s", uid, spool["id"], e)
+                logger.warning("Could not add native tag %s to spool %s: %s", uid, spool_id, e)
                 continue
             if holder is None:
                 added += 1
-                logger.info("Added native tag %s to Spoolman spool %s", uid, spool["id"])
-            else:
-                logger.warning("Native tag %s belongs to spool %s, not added to %s", uid, holder, spool["id"])
+                self._refused_tags.pop((spool_id, uid), None)
+                logger.info("Added native tag %s to Spoolman spool %s", uid, spool_id)
+                continue
+            log = logger.debug if refused_at is not None else logger.warning
+            where = f"spool {holder}" if holder > 0 else "a filament or location"
+            log("Native tag %s belongs to %s, not added to spool %s", uid, where, spool_id)
+            self._refused_tags[(spool_id, uid)] = now
         return added
 
     async def find_spool_by_tag(self, tag_uid: str, cached_spools: list[dict] | None = None) -> dict | None:
