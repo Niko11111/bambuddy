@@ -311,6 +311,18 @@ class TestNfcWriteResult:
         assert (fake.native(1), fake.native(7)) == ([], [CHIP])
         assert fake.spools[7]["extra"]["tag"] == json.dumps(CHIP)
 
+    async def test_a_tag_the_spool_already_holds_is_left_as_it_is(self, async_client, spoolman_on, device):
+        fake = FakeSpoolman()
+        fake.add_spool(7, tags=[CHIP])
+
+        with serving(fake):
+            resp = await self._report(async_client)
+
+        assert resp.status_code == 200
+        assert fake.tag_writes() == []
+        assert fake.native(7) == [CHIP]
+        assert fake.spools[7]["extra"]["tag"] == json.dumps(CHIP)
+
     async def test_a_refused_native_tag_leaves_extra_tag_untouched(self, async_client, spoolman_on, device):
         fake = FakeSpoolman()
         fake.add_spool(7)

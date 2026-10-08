@@ -829,14 +829,19 @@ async def nfc_write_result(
                 if await sm_client.has_tag_api():
                     before = await sm_client.get_spool(req.spool_id)
                     had = any(t.get("uid") == uid for t in before.get("tags") or [])
-                    holder = await sm_client.link_native_tag(req.spool_id, uid)
-                    if holder is not None and holder > 0:
-                        await sm_client.unlink_native_tag(holder, uid)
+                    # A spool that already holds the tag has nothing to link or move.
+                    if not had:
                         holder = await sm_client.link_native_tag(req.spool_id, uid)
-                        logger.info("Spoolman: native tag %s moved to spool %d", uid, req.spool_id)
-                    if holder is not None:
-                        logger.warning("Native tag %s belongs to a filament or location, not linked", uid)
-                    added_native = holder is None and not had
+                        if holder is not None and holder > 0:
+                            previous = holder
+                            await sm_client.unlink_native_tag(previous, uid)
+                            holder = await sm_client.link_native_tag(req.spool_id, uid)
+                            logger.info(
+                                "Spoolman: native tag %s moved from spool %d to %d", uid, previous, req.spool_id
+                            )
+                        if holder is not None:
+                            logger.warning("Native tag %s belongs to a filament or location, not linked", uid)
+                        added_native = holder is None
                 try:
                     await sm_client.merge_spool_extra(req.spool_id, {"tag": tag_value})
                 except Exception:
