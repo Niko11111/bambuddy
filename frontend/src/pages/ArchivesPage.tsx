@@ -72,6 +72,7 @@ import { openInSlicer, resolveDesktopSlicer, type SlicerType } from '../utils/sl
 import { formatDateTime, formatDateOnly, parseUTCDate, type TimeFormat, formatDuration } from '../utils/date';
 import { getCurrencySymbol } from '../utils/currency';
 import { getBedTypeInfo } from '../utils/bedType';
+import { splitFilamentTypes } from '../utils/filamentTypes';
 import { invalidateArchiveAndProjectViews } from '../utils/projectQueries';
 import { assignableProjects } from '../utils/projectTree';
 import { verdictSourceKey } from '../utils/verdictSource';
@@ -914,6 +915,7 @@ function ArchiveCard({
                 ? api.getArchivePlateThumbnail(archive.id, plates[displayPlateIndex]?.index ?? 0)
                 : api.getArchiveThumbnail(archive.id)
             }
+            loading="lazy"
             alt={archive.print_name || archive.filename}
             className="w-full h-full object-cover"
           />
@@ -1281,8 +1283,14 @@ function ArchiveCard({
           {(archive.cost != null || archive.energy_cost != null || archive.wear_cost != null) && (
             <div className="flex items-center gap-3 text-bambu-gray">
               {archive.cost != null && (
-                <div className="flex items-center gap-1.5">
+                // A running print's cost is an estimate until completion re-prices it (#3261)
+                <div
+                  className="flex items-center gap-1.5"
+                  title={archive.status === 'printing' ? t('archives.card.costEstimate') : undefined}
+                  data-testid="archive-cost"
+                >
                   <Coins className="w-3 h-3" />
+                  {archive.status === 'printing' && '~'}
                   {currency}{archive.cost.toFixed(2)}
                 </div>
               )}
@@ -2378,6 +2386,7 @@ function ArchiveListRow({
           {archive.thumbnail_path ? (
             <img
               src={api.getArchiveThumbnail(archive.id)}
+              loading="lazy"
               alt=""
               className="w-10 h-10 object-cover rounded"
             />
@@ -2956,9 +2965,12 @@ export function ArchivesPage() {
     const saved = localStorage.getItem('archiveFilterPrinter');
     return saved ? Number(saved) : null;
   });
-  const [filterMaterial, setFilterMaterial] = useState<string | null>(() =>
-    localStorage.getItem('archiveFilterMaterial')
-  );
+  const [filterMaterial, setFilterMaterial] = useState<string | null>(() => {
+    // A saved joined value ("PLA Basic,PLA") was once offered as a material of
+    // its own (#3262); it matches nothing now, and would hide every archive.
+    const saved = localStorage.getItem('archiveFilterMaterial');
+    return saved && !saved.includes(',') ? saved : null;
+  });
   const [filterColors, setFilterColors] = useState<Set<string>>(() => {
     const saved = localStorage.getItem('archiveFilterColors');
     return saved ? new Set(JSON.parse(saved)) : new Set();
@@ -3550,7 +3562,7 @@ export function ArchivesPage() {
 
   // Extract unique materials and colors from archives
   const uniqueMaterials = [...new Set(
-    archives?.flatMap(a => a.filament_type?.split(', ') || []).filter(Boolean) || []
+    archives?.flatMap(a => splitFilamentTypes(a.filament_type)) || []
   )].sort();
 
   const uniqueColors = [...new Set(
@@ -3600,7 +3612,7 @@ export function ArchivesPage() {
 
       // Material filter
       const matchesMaterial = !filterMaterial ||
-        (a.filament_type?.split(', ').includes(filterMaterial));
+        splitFilamentTypes(a.filament_type).includes(filterMaterial);
 
       // Color filter (AND: must have all selected colors, OR: must have any selected color)
       const archiveColors = a.filament_color?.split(',') || [];

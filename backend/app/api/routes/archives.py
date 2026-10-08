@@ -17,7 +17,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core import database
 from backend.app.core.auth import (
+    ApiKeyActor,
     MediaOrRequestPrinterScope,
+    RequestActor,
     RequestPrinterScope,
     RequirePermissionIfAuthEnabled,
     probe_permissions_if_auth_enabled,
@@ -218,7 +220,7 @@ def _ensure_archive_visible(
     return archive
 
 
-def _validate_user_filter_permission(current_user: User | None, created_by_id: int | None):
+def _validate_user_filter_permission(current_user: User | ApiKeyActor | None, created_by_id: int | None):
     """Raise 403 if created_by_id filter is used without stats:filter_by_user permission."""
     if created_by_id is None or current_user is None:
         return
@@ -544,6 +546,65 @@ async def list_archives(
             )
         )
     return result
+
+
+@router.get("/last-per-printer", response_model=list[ArchiveResponse])
+async def list_last_archive_per_printer(
+    db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.ARCHIVES_READ_ALL,
+            Permission.ARCHIVES_READ_OWN,
+        )
+    ),
+    printer_scope: PrinterScope = RequestPrinterScope,
+):
+    """The most recent archive of every printer, for the printer cards.
+
+    One query for the whole Printers page instead of one list request per card.
+    Leaves out the duplicate detection the full listing does: the card shows a
+    name and an outcome prompt, and on a farm that scan ran once per printer
+    on every page load.
+    """
+    user, can_read_all = auth_result
+    filters = [PrintArchive.deleted_at.is_(None), PrintArchive.printer_id.isnot(None)]
+    if user is not None and not can_read_all:
+        filters.append(PrintArchive.created_by_id == user.id)
+    # Only printers the caller may see (#1727)
+    if (clause := printer_scope.where(PrintArchive.printer_id)) is not None:
+        filters.append(clause)
+
+    ranked = (
+        select(
+            PrintArchive.id,
+            func.row_number()
+            .over(
+                partition_by=PrintArchive.printer_id,
+                # A reprint reuses its archive row, moving it to the printer it
+                # runs on with a fresh started_at, so the latest run start, not
+                # the row's age, tells which print a printer ran last.
+                order_by=(
+                    func.coalesce(PrintArchive.started_at, PrintArchive.created_at).desc(),
+                    PrintArchive.id.desc(),
+                ),
+            )
+            .label("rn"),
+        )
+        .where(*filters)
+        .subquery()
+    )
+
+    from sqlalchemy.orm import selectinload
+
+    result = await db.execute(
+        select(PrintArchive)
+        .options(selectinload(PrintArchive.project), selectinload(PrintArchive.created_by))
+        .where(PrintArchive.id.in_(select(ranked.c.id).where(ranked.c.rn == 1)))
+        .order_by(PrintArchive.printer_id)
+    )
+    archives = list(result.scalars().all())
+    run_aggregates = await _load_run_aggregates(db, [a.id for a in archives])
+    return [archive_to_response(a, run_aggregate=run_aggregates.get(a.id)) for a in archives]
 
 
 @router.get("/no-3mf-warning")
@@ -1139,9 +1200,10 @@ async def export_stats(
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermissionIfAuthEnabled(Permission.STATS_READ),
     printer_scope: PrinterScope = RequestPrinterScope,
+    actor: User | ApiKeyActor | None = RequestActor,
 ):
     """Export statistics summary to CSV or Excel format."""
-    _validate_user_filter_permission(current_user, created_by_id)
+    _validate_user_filter_permission(actor, created_by_id)
 
     from fastapi.responses import StreamingResponse
 
@@ -1178,6 +1240,7 @@ async def get_archive_stats(
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermissionIfAuthEnabled(Permission.STATS_READ),
     printer_scope: PrinterScope = RequestPrinterScope,
+    actor: User | ApiKeyActor | None = RequestActor,
 ):
     """Get statistics across all archives.
 
@@ -1188,7 +1251,7 @@ async def get_archive_stats(
     """
     from backend.app.models.print_log import PrintLogEntry
 
-    _validate_user_filter_permission(current_user, created_by_id)
+    _validate_user_filter_permission(actor, created_by_id)
 
     # Build date filter conditions scoped to PrintLogEntry (event-time).
     base_conditions = []
@@ -4915,6 +4978,7 @@ async def slice_archive(
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermissionIfAuthEnabled(Permission.LIBRARY_UPLOAD),
     printer_scope: PrinterScope = MediaOrRequestPrinterScope,
+    actor: User | ApiKeyActor | None = RequestActor,
 ):
     """Enqueue a slice job for an archive's source. Returns 202 + job_id;
     the slice runs in the background, the caller polls `GET /slice-jobs/{id}`.
@@ -4933,10 +4997,10 @@ async def slice_archive(
     archive = await db.get(PrintArchive, archive_id)
     # Per-row ownership gate — mirror the archive read routes. LIBRARY_UPLOAD
     # alone let a READ_OWN caller slice another user's archive by raw id even
-    # though GET on that id returned 404. API-key / auth-disabled callers
-    # (current_user is None) keep can_read_all=True — no per-row identity.
-    can_read_all = current_user is None or current_user.has_permission(Permission.ARCHIVES_READ_ALL.value)
-    archive = _ensure_archive_visible(archive, current_user, can_read_all, printer_scope)
+    # though GET on that id returned 404. An API key is checked as its owner
+    # (RequestActor); only auth off keeps can_read_all=True.
+    can_read_all = actor is None or actor.has_permission(Permission.ARCHIVES_READ_ALL.value)
+    archive = _ensure_archive_visible(archive, actor, can_read_all, printer_scope)
 
     src_relative = archive.source_3mf_path or archive.file_path
     if not src_relative:
